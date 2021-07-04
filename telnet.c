@@ -65,8 +65,8 @@
  * Queue Sizes.
  */
 #define	TELNET_CANQ_SIZE	(1024 * 8)
-#define	TELNET_RAWQ_SIZE    (1024 * 4)	
-#define	TELNET_OPTQ_SIZE    (1024)	
+#define	TELNET_RAWQ_SIZE    (1024 * 4)
+#define	TELNET_OPTQ_SIZE    (1024)
 #define	TELNET_OUTQ_SIZE	(32*1024)
 
 /*
@@ -103,7 +103,7 @@
 #define	CR			13
 #define	DEL			127
 
-#define TRUNCATED   "*** Truncated. ***\r\n" 
+#define TRUNCATED   "*** Truncated. ***\r\n"
 
 static void telnet_interactive(void *vp);
 static void telnet_input(telnet_t *tp);
@@ -221,7 +221,7 @@ telnet_enabw(telnet_t *tp)
 }
 
 /*
- * Append a character string to the output queue, encapsulating it 
+ * Append a character string to the output queue, encapsulating it
  * appropriately.
  * Returns 1 in case the message is truncated.
  */
@@ -279,7 +279,7 @@ telnet_output(telnet_t *tp, u_char *cp)
     return 0;
 }
 
-/* 
+/*
  * Send a GMCP SB message if GMCP has been enabled on the connection.
  * Returns 1 if gmcp is not enabled on the connection.
  */
@@ -307,7 +307,7 @@ telnet_output_mssp(telnet_t *tp, mssp_t *vars[], size_t count)
 
     for (size_t i = 0; i < count; i++) {
         nq_putc(nq, MSSP_VAR);
-        nq_puts(nq, vars[i]->name); 
+        nq_puts(nq, vars[i]->name);
 
         for (size_t k = 0; k < vars[i]->size; k++) {
             nq_putc(nq, MSSP_VAL);
@@ -401,16 +401,19 @@ telnet_interactive(void *vp)
 {
     telnet_t *tp = vp;
     char *cp;
+
     if (!(tp->t_flags & TF_ATTACH)) {
         tp->task = NULL;
         telnet_shutdown(tp->t_nd, tp);
         return;
     }
+
     if (tp->t_flags & TF_DISCONNECT) {
         tp->t_flags &= ~TF_DISCONNECT;
         if (tp->t_ip)
             remove_interactive(tp->t_ip, 1);
     }
+
     if (!(tp->t_flags & TF_ATTACH)) {
         tp->task = NULL;
         telnet_shutdown(tp->t_nd, tp);
@@ -424,7 +427,7 @@ telnet_interactive(void *vp)
         tp->t_flags &= ~TF_INPUT;
 
         cp = (char *)nq_rptr(tp->t_canq);
-        if (nq_full(tp->t_canq) && 
+        if (nq_full(tp->t_canq) &&
             (nq_size(tp->t_canq) > (strlen(TRUNCATED) + 1))) {
 
             cp += nq_size(tp->t_canq) - (strlen(TRUNCATED) + 1);
@@ -560,6 +563,9 @@ telnet_get_optp(telnet_t *tp, u_char opt)
         case TELOPT_MSSP:
             return &tp->t_optb[OP_MSSP];
 
+        case TELOPT_CHARSET:
+            return &tp->t_optb[OP_CHARSET];
+
         default:
             return NULL;
     }
@@ -682,7 +688,7 @@ telnet_send_dont(telnet_t *tp, u_char opt)
     telnet_enabw(tp);
 }
 
-/* 
+/*
  * Send IAC SB subnegotiation sequence
  */
 static void
@@ -870,7 +876,7 @@ telnet_disable_echo(telnet_t *tp)
     telnet_neg_ldisab(tp, TELOPT_ECHO);
 }
 
-/* 
+/*
  * Enable GMCP
  */
 void
@@ -884,7 +890,7 @@ telnet_enable_gmcp(telnet_t *tp)
 
 /*
  * Disable GMCP
- */   
+ */
 void
 telnet_disable_gmcp(telnet_t *tp)
 {
@@ -916,6 +922,49 @@ telnet_disable_mssp(telnet_t *tp)
         return;
 
     telnet_neg_ldisab(tp, TELOPT_MSSP);
+}
+
+/*
+ * Enable charset negotiation
+ *
+ * The way we do this is actually not a proper negotiation yet.
+ * What we do is send a single charset and hope the client accept it.
+ *
+ * This is done primarily to get mudlet to config the connection correctly.
+ * This should be replaced with the ability to actually convert charsets.
+ */
+void
+telnet_enable_charset(telnet_t *tp)
+{
+    if (nq_avail(tp->t_outq) < 3)
+        return;
+
+    if (NULL == default_charset)
+        return;
+
+    telnet_neg_lenab(tp, TELOPT_CHARSET);
+}
+
+void
+telnet_output_charset(telnet_t *tp)
+{
+    nqueue_t *nq;
+    nq = tp->t_outq;
+
+    if (nq_avail(nq) < (8 + strlen(default_charset)))
+        return;
+
+    nq_putc(nq, IAC);
+    nq_putc(nq, SB);
+    nq_putc(nq, TELOPT_CHARSET);
+    nq_putc(nq, CHARSET_REQUEST);
+
+    nq_putc(nq, ';');
+    nq_puts(nq, (u_char *)default_charset);
+    nq_putc(nq, IAC);
+    nq_putc(nq, SE);
+
+    telnet_enabw(tp);
 }
 
 /*
@@ -1067,6 +1116,13 @@ telnet_do(telnet_t *tp, u_char opt)
         mssp_request(tp->t_ip);
         return;
     }
+
+    if (opt == TELOPT_CHARSET)
+    {
+        telnet_output_charset(tp);
+        return;
+    }
+
 
     switch (op->o_us)
     {
@@ -1419,6 +1475,7 @@ telnet_write(ndesc_t *nd, telnet_t *tp)
 
                 default:
                     telnet_disconnect(tp);
+                    nd_disable(nd, ND_W);
                     return;
             }
         }
@@ -1514,6 +1571,7 @@ telnet_accept(void *vp)
     /* Start negotiation of optional features */
     telnet_enable_gmcp(tp);
     telnet_enable_mssp(tp);
+    telnet_enable_charset(tp);
 
     ip = (void *)new_player(tp, &addr, addrlen, local_port);
     if (ip == NULL)
@@ -1542,7 +1600,7 @@ telnet_init(u_short port_nr)
 {
     int s = -1, e;
     struct addrinfo hints;
-    struct addrinfo *res, *rp;    
+    struct addrinfo *res, *rp;
     ndesc_t *nd;
     char host[NI_MAXHOST], port[NI_MAXSERV];
 
@@ -1551,7 +1609,7 @@ telnet_init(u_short port_nr)
     hints.ai_flags = AI_PASSIVE;
     hints.ai_socktype = SOCK_STREAM;
 
-    snprintf(port, sizeof(port), "%d", port_nr);    
+    snprintf(port, sizeof(port), "%d", port_nr);
     if ((e = getaddrinfo(NULL, port, &hints, &res)))
         fatal("telnet_init: %s\n", gai_strerror(e));
 
